@@ -41,6 +41,8 @@
 #ifndef VTOL_TYPE_H
 #define VTOL_TYPE_H
 
+#include <lib/mathlib/mathlib.h>
+
 struct Params {
 	int idle_pwm_mc;			// pwm value for idle in mc mode
 	int vtol_motor_count;		// number of motors
@@ -109,6 +111,9 @@ protected:
 	struct Params 						*_params;
 
 	bool flag_idle_mc;		//false = "idle is set for fixed wing mode"; true = "idle is set for multicopter mode"
+
+	math::Vector<3> _mc_att_ctrl_weight;			/**< the amount of multicopter attitude control that should be applied in fixed wing mode while transitioning */
+
 
 };
 

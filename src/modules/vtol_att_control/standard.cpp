@@ -46,11 +46,11 @@ Standard::Standard(VtolAttitudeControl *attc) :
 	VtolType(attc),
 	_flag_enable_mc_motors(true),
 	_pusher_throttle(0.0f),
-	_mc_att_ctl_weight(1.0f),
 	_airspeed_trans_blend_margin(0.0f)
 {
 	_vtol_schedule.flight_mode = MC_MODE;
 	_vtol_schedule.transition_start = 0;
+	memset(&_mc_att_ctrl_weight, 1.0f, sizeof(_mc_att_ctrl_weight));
 
 	_params_handles_standard.front_trans_dur = param_find("VT_F_TRANS_DUR");
 	_params_handles_standard.back_trans_dur = param_find("VT_B_TRANS_DUR");
@@ -107,7 +107,7 @@ void Standard::update_vtol_state()
 		if (_vtol_schedule.flight_mode == MC_MODE) {
 			// in mc mode
 			_vtol_schedule.flight_mode = MC_MODE;
-			_mc_att_ctl_weight = 1.0f;
+			memset(&_mc_att_ctrl_weight, 1.0f, sizeof(_mc_att_ctrl_weight));
 
 		} else if (_vtol_schedule.flight_mode == FW_MODE) {
 			// transition to mc mode
@@ -118,7 +118,7 @@ void Standard::update_vtol_state()
 		} else if (_vtol_schedule.flight_mode == TRANSITION_TO_FW) {
 			// failsafe back to mc mode
 			_vtol_schedule.flight_mode = MC_MODE;
-			_mc_att_ctl_weight = 1.0f;
+			memset(&_mc_att_ctrl_weight, 1.0f, sizeof(_mc_att_ctrl_weight));
 
 		} else if (_vtol_schedule.flight_mode == TRANSITION_TO_MC) {
 			// keep transitioning to mc mode
@@ -138,7 +138,7 @@ void Standard::update_vtol_state()
 		} else if (_vtol_schedule.flight_mode == FW_MODE) {
 			// in fw mode
 			_vtol_schedule.flight_mode = FW_MODE;
-			_mc_att_ctl_weight = 0.0f;
+			memset(&_mc_att_ctrl_weight, 0.0f, sizeof(_mc_att_ctrl_weight));
 
 		} else if (_vtol_schedule.flight_mode == TRANSITION_TO_FW) {
 			// continue the transition to fw mode while monitoring airspeed for a final switch to fw mode
@@ -172,6 +172,7 @@ void Standard::update_vtol_state()
 
 void Standard::update_transition_state()
 {
+	float mc_att_ctrl_weight = 1.0f;
 	if (_vtol_schedule.flight_mode == TRANSITION_TO_FW) {
 		if (_params_standard.front_trans_dur <= 0.0f) {
 			// just set the final target throttle value
@@ -184,18 +185,18 @@ void Standard::update_transition_state()
 
 		// do blending of mc and fw controls if a blending airspeed has been provided
 		if (_airspeed_trans_blend_margin > 0.0f && _airspeed->true_airspeed_m_s >= _params_standard.airspeed_blend) {
-			_mc_att_ctl_weight = 1.0f - fabsf(_airspeed->true_airspeed_m_s - _params_standard.airspeed_blend) / _airspeed_trans_blend_margin;
+			mc_att_ctrl_weight = 1.0f - fabsf(_airspeed->true_airspeed_m_s - _params_standard.airspeed_blend) / _airspeed_trans_blend_margin;
 		} else {
 			// at low speeds give full weight to mc
-			_mc_att_ctl_weight = 1.0f;
+			mc_att_ctrl_weight = 1.0f;
 		}
 
 	} else if (_vtol_schedule.flight_mode == TRANSITION_TO_MC) {
 		// continually increase mc attitude control as we transition back to mc mode
 		if (_params_standard.back_trans_dur > 0.0f) {
-			_mc_att_ctl_weight = (float)hrt_elapsed_time(&_vtol_schedule.transition_start) / (_params_standard.back_trans_dur * 1000000.0f);
+			mc_att_ctrl_weight = (float)hrt_elapsed_time(&_vtol_schedule.transition_start) / (_params_standard.back_trans_dur * 1000000.0f);
 		} else {
-			_mc_att_ctl_weight = 1.0f;	
+			mc_att_ctrl_weight = 1.0f;
 		}
 
 		// in fw mode we need the multirotor motors to stop spinning, in backtransition mode we let them spin up again	
@@ -206,7 +207,8 @@ void Standard::update_transition_state()
 		}
 	}
 
-	_mc_att_ctl_weight = math::constrain(_mc_att_ctl_weight, 0.0f, 1.0f);
+	mc_att_ctrl_weight = math::constrain(mc_att_ctrl_weight, 0.0f, 1.0f);
+	memset(&_mc_att_ctrl_weight, mc_att_ctrl_weight, sizeof(_mc_att_ctrl_weight));
 }
 
 void Standard::update_mc_state()
@@ -235,24 +237,23 @@ void Standard::update_external_state()
 void Standard::fill_actuator_outputs()
 {
 	/* multirotor controls */
-	_actuators_out_0->control[0] = _actuators_mc_in->control[0] * _mc_att_ctl_weight;	// roll
-	_actuators_out_0->control[1] = _actuators_mc_in->control[1] * _mc_att_ctl_weight;	// pitch
-	_actuators_out_0->control[2] = _actuators_mc_in->control[2] * _mc_att_ctl_weight;	// yaw
-	_actuators_out_0->control[3] = _actuators_mc_in->control[3];	// throttle
+	_actuators_out_0->control[actuator_controls_s::INDEX_ROLL] = _actuators_mc_in->control[actuator_controls_s::INDEX_ROLL] * _mc_att_ctrl_weight(actuator_controls_s::INDEX_ROLL);	// roll
+	_actuators_out_0->control[actuator_controls_s::INDEX_PITCH] = _actuators_mc_in->control[actuator_controls_s::INDEX_PITCH] * _mc_att_ctrl_weight(actuator_controls_s::INDEX_PITCH);	// pitch
+	_actuators_out_0->control[actuator_controls_s::INDEX_YAW] = _actuators_mc_in->control[actuator_controls_s::INDEX_YAW] * _mc_att_ctrl_weight(actuator_controls_s::INDEX_YAW);	// yaw
+	_actuators_out_0->control[actuator_controls_s::INDEX_THROTTLE] = _actuators_mc_in->control[actuator_controls_s::INDEX_THROTTLE];	// throttle
 
 	/* fixed wing controls */
-	const float fw_att_ctl_weight = 1.0f - _mc_att_ctl_weight;
-	_actuators_out_1->control[0] = -_actuators_fw_in->control[0] * fw_att_ctl_weight;	//roll
-	_actuators_out_1->control[1] = (_actuators_fw_in->control[1] + _params->fw_pitch_trim) * fw_att_ctl_weight;	//pitch
-	_actuators_out_1->control[2] = _actuators_fw_in->control[2] * fw_att_ctl_weight;	// yaw
+	_actuators_out_1->control[actuator_controls_s::INDEX_ROLL] = -_actuators_fw_in->control[actuator_controls_s::INDEX_ROLL] * (1 - _mc_att_ctrl_weight(actuator_controls_s::INDEX_ROLL));	//roll
+	_actuators_out_1->control[actuator_controls_s::INDEX_PITCH] = (_actuators_fw_in->control[actuator_controls_s::INDEX_PITCH] + _params->fw_pitch_trim) * (1 - _mc_att_ctrl_weight(actuator_controls_s::INDEX_PITCH));	//pitch
+	_actuators_out_1->control[actuator_controls_s::INDEX_YAW] = _actuators_fw_in->control[actuator_controls_s::INDEX_YAW] * (1 - _mc_att_ctrl_weight(actuator_controls_s::INDEX_YAW));	// yaw
 
 	// set the fixed wing throttle control
 	if (_vtol_schedule.flight_mode == FW_MODE) {
 		// take the throttle value commanded by the fw controller
-		_actuators_out_1->control[3] = _actuators_fw_in->control[3];
+		_actuators_out_1->control[actuator_controls_s::INDEX_THROTTLE] = _actuators_fw_in->control[actuator_controls_s::INDEX_THROTTLE];
 	} else {
 		// otherwise we may be ramping up the throttle during the transition to fw mode 
-		_actuators_out_1->control[3] = _pusher_throttle;
+		_actuators_out_1->control[actuator_controls_s::INDEX_THROTTLE] = _pusher_throttle;
 	}
 }
 
